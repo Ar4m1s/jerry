@@ -138,6 +138,8 @@ configuration() {
         esac
     fi
     [ -z "$show_adult_content" ] && show_adult_content="false"
+    [ "$external_subtitles" = false ] && external_subtitles=""
+    [ -z "$external_subtitles_language"] && external_subtitles_language="eng"
 }
 
 check_credentials() {
@@ -1179,7 +1181,7 @@ add_to_history() {
 play_video() {
     case "$provider" in
         aniwatch) displayed_title="$title - Ep $((progress + 1)) $episode_title" ;;
-        yugen) displayed_title="$title - Ep $episode_title" ;;
+        yugen) displayed_title="$title - Ep $((progress + 1)) $episode_title" ;;
         hdrezka) displayed_title="$episode_title - Ep $((progress + 1))" ;;
         aniworld) displayed_title="$episode_title" ;;
         *) displayed_title="$title - Ep $((progress + 1))" ;;
@@ -1200,16 +1202,16 @@ play_video() {
             if [ -n "$subs_links" ]; then
                 send_notification "$title" "4000" "$images_cache_dir/$media_id.jpg" "$title"
                 if [ "$discord_presence" = "true" ]; then
-                    eval "$presence_script_path" \"$player\" \"${title}\" \"${start_year}\" \"$((progress + 1))\" \"${video_link}\" \"${subs_links}\" ${opts} 2>&1 | tee $tmp_position
+                    eval "$presence_script_path" \"$player\" \"${title}\" \"${start_year}\" \"$((progress + 1))\" \"${video_link}\" \"${subs_links}\" \"${sub_file_a}\" ${opts} 2>&1 | tee $tmp_position
                 else
-                    $player "$video_link" $opts "$subs_arg" "$subs_links" --force-media-title="$displayed_title" --msg-level=ffmpeg/demuxer=error 2>&1 | tee $tmp_position
+                    $player "$video_link" $opts "$subs_arg" "$sub_file_a" "$subs_links" --force-media-title="$displayed_title" --msg-level=ffmpeg/demuxer=error 2>&1 | tee $tmp_position
                 fi
             else
                 send_notification "$title" "4000" "$images_cache_dir/$media_id.jpg" "$title"
                 if [ "$discord_presence" = "true" ]; then
-                    eval "$presence_script_path" \"$player\" \"${title}\" \"${start_year}\" \"$((progress + 1))\" \"${video_link}\" \"\" ${opts} 2>&1 | tee $tmp_position
+                    eval "$presence_script_path" \"$player\" \"${title}\" \"${start_year}\" \"$((progress + 1))\" \"${video_link}\" \"${sub_file_a}\" \"\" ${opts} 2>&1 | tee $tmp_position
                 else
-                    $player "$video_link" $opts --force-media-title="$displayed_title" --msg-level=ffmpeg/demuxer=error 2>&1 | tee $tmp_position
+                    $player "$video_link" $opts "$sub_file_a" --force-media-title="$displayed_title" --msg-level=ffmpeg/demuxer=error 2>&1 | tee $tmp_position
                 fi
             fi
             stopped_at=$($sed -nE "s@.*AV: ([0-9:]*) / ([0-9:]*) \(([0-9]*)%\).*@\1@p" "$tmp_position" | tail -1)
@@ -1264,6 +1266,51 @@ read_chapter() {
     esac
 }
 
+download_subtitle() {
+    temp_sub_link=$(printf "%s" "$temp_sub_x" | $sed -n "$1p")
+    sub_id=$(curl -s "$sub_base$temp_sub_link" | $sed -nE 's@.*download="download".*href=".*/([0-9]+)".*@\1@p')
+    curl -s "$d_sub_base$sub_id" -o sub.zip
+    unzip -qq sub.zip 2> /dev/null
+    mv *.srt sub/sub_$1.srt 2> /dev/null
+    mv *.ass sub/sub_$1.ass 2> /dev/null
+    mv *.ssa sub/sub_$1.ssa 2> /dev/null
+    rm sub.zip
+    test -f "sub/sub_$1.srt" && sub_file_a="$sub_file_a:sub/sub_$1.srt"
+    test -f "sub/sub_$1.ass" && sub_file_a="$sub_file_a:sub/sub_$1.ass"
+    test -f "sub/sub_$1.ssa" && sub_file_a="$sub_file_a:sub/sub_$1.ssa"
+    rm *.ass 2> /dev/null
+    rm *.ssa 2> /dev/null
+    rm *.srt 2> /dev/null
+}
+
+download_subtitles() {
+    sub_base="https://www.opensubtitles.org"
+    d_sub_base="https://dl.opensubtitles.org/en/download/sub/"
+    case "$provider" in
+        "allanime")
+            sub_query="$title" ;;
+        *)
+            sub_query="$title $episode_title" ;;
+    esac
+
+    sub_sort="sort-7/asc-0"
+    sub_search_url="$sub_base/en/search/sublanguageid-$external_subtitles_language/episode-$((progress + 1))/moviename-$sub_query/$sub_sort"
+    sub_search_url=$(printf "%s" "$sub_search_url" | $sed "s/ /-/g")
+    temp_sub_x=$(curl -s $sub_search_url | $sed -nE 's@.*;" title="subtitles - [^"]+" href="([^"]+)".*@\1@p')
+
+    rm -r sub
+    mkdir sub
+    
+    sub_file_a="--sub-files="
+    download_subtitle "1"
+    download_subtitle "2"
+    download_subtitle "3"
+    download_subtitle "4"
+    download_subtitle "5"
+
+    rm *.nfo
+}
+
 watch_anime() {
     if [ "$sub_or_dub" = "dub" ] || [ "$sub_or_dub" = "sub" ]; then
         translation_type="$sub_or_dub"
@@ -1284,6 +1331,7 @@ watch_anime() {
     fi
 
     get_episode_info
+    title=$(printf "$title" | sed 's/[ \t]*$//')
 
     if [ -z "$episode_info" ]; then
         send_notification "Error" "" "" "$title not found"
@@ -1298,10 +1346,13 @@ watch_anime() {
         fi
     fi
 
+    if [ "$external_subtitles" = true ]; then
+        download_subtitles
+    fi
+
     get_json
     [ -z "$video_link" ] && exit 1
     play_video
-
 }
 
 read_manga() {
